@@ -4,7 +4,7 @@
 """
 
 from numpy import exp, log, dot, sqrt, std, argmin, diagonal, nonzero, ndarray, subtract
-from numpy import zeros, ones, array, where, pi
+from numpy import zeros, ones, array, where, pi, diag
 from numpy import sum as npsum
 from scipy.special import erf
 from numpy.linalg import inv, slogdet, solve, cholesky
@@ -110,32 +110,28 @@ class GpRegressor(object):
         self.L = cholesky(self.K_xx)
         self.H = solve_triangular(self.L.T, solve_triangular(self.L, self.y, lower = True))
 
-    def __call__(self, q, theta = None):
+    def __call__(self, points, theta = None):
         """
         Calculate the mean and standard deviation of the regression estimate at a series
         of specified spatial points.
 
-        :param q: A list containing the spatial locations where the mean and standard \
-                  deviation of the estimate is to be calculated. In the 1D case this \
-                  would be a list of floats, or a list of coordinate tuples in the \
-                  multi-dimensional case.
+        :param list points: \
+            A list containing the spatial locations where the mean and standard deviation
+            of the estimate is to be calculated. In the 1D case this would be a list of
+            floats, or a list of coordinate tuples in the multi-dimensional case.
 
-        :return: Two 1D arrays, the first containing the means and the second containing \
-                 the sigma values.
+        :return: \
+            Two 1D arrays, the first containing the means and the second containing the
+            standard deviations.
         """
         if theta is not None:
-            t = [exp(h) for h in theta]
-            self.a = t[0]
-            self.s = array(t[1:])
-            self.K_xx = self.build_covariance(self.a, self.s*self.scale_lengths)
-            self.L = cholesky(self.K_xx)
-            self.H = solve_triangular(self.L.T, solve_triangular(self.L, self.y, lower = True))
+            self.set_hyperparameters(theta)
 
         lengths = self.s * self.scale_lengths
 
         mu_q = []
         errs = []
-        for v in q:
+        for v in points:
             if hasattr(v, '__iter__'):
                 K_qx = array([self.covariance(v, j, lengths) for j in self.x]).reshape([1, len(self.x)])
             else:
@@ -146,6 +142,59 @@ class GpRegressor(object):
             errs.append( self.a**2 - npsum(v**2) )
 
         return array(mu_q), sqrt( abs(array(errs)) )
+
+    def set_hyperparameters(self, theta):
+        t = [exp(h) for h in theta]
+        self.a = t[0]
+        self.s = array(t[1:])
+        self.K_xx = self.build_covariance(self.a, self.s * self.scale_lengths)
+        self.L = cholesky(self.K_xx)
+        self.H = solve_triangular(self.L.T, solve_triangular(self.L, self.y, lower=True))
+
+    def gradient(self, q):
+        """
+        Calculate the mean and covariance of the gradient of the regression estimate
+        with respect to the spatial coordinates at a series of specified points.
+
+        :param list points: \
+            A list containing the spatial locations where the mean vector and and covariance
+            matrix of the gradient of the regression estimate are to be calculated. In the 1D
+            case this would be a list of floats, or a list of coordinate tuples in the
+            multi-dimensional case.
+
+        :return means, covariances: \
+            A list of mean vectors and a list of covariance matrices for the gradient distribution
+            at each given spatial point.
+        """
+        lengths = self.s*self.scale_lengths
+        mu_q = []
+        vars = []
+        for v in q:
+            # build the covariance between the current point and all training points
+            if hasattr(v, '__iter__'): # multi-dimensional case
+                K_qx = array([self.covariance(v, j, lengths) for j in self.x]).reshape([1, len(self.x)])
+            else: # 1-dimensional case
+                K_qx = array([self.covariance((v,), j, lengths) for j in self.x]).reshape([1, len(self.x)])
+
+            v = array(v)
+            # calculate required terms
+            dX = array([v - array(a) for a in self.x])
+            iL = diag(1./array(lengths)**2)
+
+            A = -dot(iL, dX.T)
+            B = (K_qx*self.H).T
+            Q = solve_triangular(self.L, (A*K_qx).T, lower = True)
+
+            # calculate the mean and covariance
+            mean = dot(A,B)
+            covariance = (self.a**2)*iL - Q.T.dot(Q)
+            # if there's only one spatial dimension, convert mean/covariance to floats
+            if covariance.shape == (1,1): covariance = covariance[0,0]
+            if mean.shape == (1,1): mean = mean[0,0]
+            # store the results for the current point
+            mu_q.append(mean)
+            vars.append(covariance)
+        return array(mu_q), vars
 
     def build_posterior(self, q):
         """
@@ -490,10 +539,14 @@ class GpOptimiser(object):
         argument is not specified the errors are taken to be small but non-zero.
 
     :keyword bounds: \
-        A iterable containing tuples which specify for the upper and lower bounds
+        A iterable containing tuples which specify the upper and lower bounds
         for the optimisation in each dimension in the format (lower_bound, upper_bound).
+
+    :param hyperpars: \
+        Hyper-parameters used by the GP-regression estimate. See the documentation of
+        the *hyperpars* keyword of the GpRegressor class for more details.
     """
-    def __init__(self, x, y, y_err = None, bounds = None):
+    def __init__(self, x, y, y_err = None, bounds = None, hyperpars = None):
         self.x = list(x)
         self.y = list(y)
         self.y_err = y_err
@@ -504,9 +557,10 @@ class GpOptimiser(object):
         else:
             self.bounds = bounds
 
-        self.gp = GpRegressor(x, y, y_err=y_err)
+        self.gp = GpRegressor(x, y, y_err=y_err, hyperpars=hyperpars)
 
         self.ir2pi = 1 / sqrt(2*pi)
+        self.ir2 = 1. / sqrt(2.)
         self.mu_max = max(self.y)
         self.expected_fractional_improvement_history = []
 
@@ -540,7 +594,7 @@ class GpOptimiser(object):
         return -sig**2
 
     def maximise_aquisition(self, aq_func):
-        opt_result = differential_evolution(aq_func, self.bounds)
+        opt_result = differential_evolution(aq_func, self.bounds, popsize = 30)
         return opt_result.x, opt_result.fun
 
     def learn_function(self):
@@ -569,4 +623,4 @@ class GpOptimiser(object):
        return exp(-0.5*z**2)*self.ir2pi
 
     def normal_cdf(self,z):
-        return 0.5*(1 + erf(z/sqrt(2)))
+        return 0.5*(1. + erf(z*self.ir2))
