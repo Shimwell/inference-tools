@@ -1,6 +1,6 @@
 
 """
-.. moduleauthor:: Chris Bowman <chris.bowman@york.ac.uk>
+.. moduleauthor:: Chris Bowman <chris.bowman.physics@gmail.com>
 """
 
 import sys
@@ -252,9 +252,10 @@ class MarkovChain(object):
         if posterior is not None:
             self.posterior = posterior
 
-            # if widths are not specified, take 1% of the starting values:
+            # if widths are not specified, take 5% of the starting values (unless they're zero)
             if widths is None:
-                widths = [ abs(i)*0.05 for i in start ]
+                widths = [ (s!=0.)*abs(s)*0.05 + (s==0.) for s in start ]
+
 
             # create a list of parameter objects
             self.params = [Parameter(value = v, sigma = s) for v, s in zip(start, widths)]
@@ -1591,7 +1592,7 @@ class ChainPool(object):
     @staticmethod
     def adv_func(arg):
         n, chain = arg
-        chain.take_steps(n)
+        for _ in range(n): chain.take_step()
         return chain
 
 
@@ -1746,7 +1747,7 @@ class ParallelTempering(object):
         Advances each chain by a total of *n* steps, performing swap attempts
         at intervals set by the *swap_interval* keyword.
 
-        :param int n: number of steps each will advance.
+        :param int n: The number of steps each chain will advance.
         :param int swap_interval: \
             The number of steps that are taken in each chain between swap attempts.
         """
