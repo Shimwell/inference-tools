@@ -3,14 +3,147 @@
 .. moduleauthor:: Chris Bowman <chris.bowman.physics@gmail.com>
 """
 
-from numpy import exp, log, dot, sqrt, std, argmin, diagonal, nonzero, ndarray, subtract
-from numpy import zeros, ones, array, where, pi, diag
+from numpy import abs, exp, log, dot, sqrt, argmin, diagonal, ndarray
+from numpy import zeros, ones, array, where, pi, diag, eye
 from numpy import sum as npsum
 from scipy.special import erf
 from numpy.linalg import inv, slogdet, solve, cholesky
 from scipy.linalg import solve_triangular
 from scipy.optimize import minimize, differential_evolution
 from itertools import product
+
+
+
+
+class SquaredExponential(object):
+    r"""
+    ``SquaredExponential`` is a covariance-function class which can be passed to
+    ``GpRegressor`` via the ``kernel`` keyword argument. It uses the 'squared-exponential'
+    covariance function given by:
+
+    .. math::
+
+       K(\underline{u}, \underline{v}) = A^2 \exp \left( -\frac{1}{2} \sum_{i=1}^{n} \left(\frac{u_i - v_i}{l_i}\right)^2 \right)
+
+    The hyper-parameter vector :math:`\underline{\theta}` used by ``SquaredExponential`` to define
+    the above function is structured as follows:
+
+    .. math::
+
+       \underline{\theta} = [ \ln{A}, \ln{l_1}, \ldots, \ln{l_n}]
+    """
+    def __init__(self, x, y):
+        # pre-calculates hyperparameter-independent part of the
+        # data covariance matrix as an optimisation
+        dx = x[:,None,:] - x[None,:,:]
+        self.distances = -0.5*dx**2 # distributed outer subtraction using broadcasting
+
+        # construct sensible bounds on the hyperparameter values
+        s = log(y.std())
+        self.bounds = [(s-4,s+4)]
+        for i in range(x.shape[1]):
+            lwr = log(abs(dx[:,:,i]).mean())-4
+            upr = log(dx[:,:,i].max())+2
+            self.bounds.append((lwr,upr))
+
+    def __call__(self, u, v, theta):
+        a = exp(theta[0])
+        L = exp(theta[1:])
+        D = -0.5*(u[:,None,:] - v[None,:,:])**2
+        C = exp((D / L[None,None,:]**2).sum(axis=2))
+        return (a**2)*C
+
+    def build_covariance(self, theta):
+        """
+        Optimized version of self.matrix() specifically for the data
+        covariance matrix where the vectors v1 & v2 are both self.x.
+        """
+        a = exp(theta[0])
+        L = exp(theta[1:])
+        C = exp((self.distances / L[None,None,:]**2).sum(axis=2))
+        return (a**2)*C
+
+    def gradient_terms(self, v, x, theta):
+        """
+        Calculates the covariance-function specific parts of
+        the expression for the predictive mean and covariance
+        of the gradient of the GP estimate.
+        """
+        a = exp(theta[0])
+        L = exp(theta[1:])
+        A = (x - v[None,:]) / L[None,:]**2
+        return A.T, (a/L)**2
+
+    def get_bounds(self):
+        return self.bounds
+
+
+
+
+
+
+class RationalQuadratic(object):
+    r"""
+    ``RationalQuadratic`` is a covariance-function class which can be passed to
+    ``GpRegressor`` via the ``kernel`` keyword argument. It uses the 'rational quadratic'
+    covariance function given by:
+
+    .. math::
+
+       K(\underline{u}, \underline{v}) = A^2 \left( 1 + \frac{1}{2\alpha} \sum_{i=1}^{n} \left(\frac{u_i - v_i}{l_i}\right)^2 \right)^{-\alpha}
+
+    The hyper-parameter vector :math:`\underline{\theta}` used by ``RationalQuadratic`` to define
+    the above function is structured as follows:
+
+    .. math::
+
+       \underline{\theta} = [ \ln{A}, \ln{\alpha}, \ln{l_1}, \ldots, \ln{l_n}]
+    """
+    def __init__(self, x, y):
+        # pre-calculates hyperparameter-independent part of the
+        # data covariance matrix as an optimisation
+        dx = x[:,None,:] - x[None,:,:]
+        self.distances = 0.5*dx**2 # distributed outer subtraction using broadcasting
+
+        # construct sensible bounds on the hyperparameter values
+        s = log(y.std())
+        self.bounds = [(s-4,s+4), (-2,6)]
+        for i in range(x.shape[1]):
+            lwr = log(abs(dx[:,:,i]).mean())-4
+            upr = log(dx[:,:,i].max())+2
+            self.bounds.append((lwr,upr))
+
+    def __call__(self, u, v, theta):
+        a = exp(theta[0])
+        k = exp(theta[1])
+        L = exp(theta[2:])
+        D = 0.5*(u[:,None,:] - v[None,:,:])**2
+        Z = (D / L[None,None,:]**2).sum(axis=2)
+        return (a**2)*(1 + Z/k)**(-k)
+
+    def build_covariance(self, theta):
+        a = exp(theta[0])
+        k = exp(theta[1])
+        L = exp(theta[2:])
+        Z = (self.distances / L[None,None,:]**2).sum(axis=2)
+        return (a**2)*(1 + Z/k)**(-k)
+
+    def gradient_terms(self, v, x, theta):
+        """
+        Calculates the covariance-function specific parts of
+        the expression for the predictive mean and covariance
+        of the gradient of the GP estimate.
+        """
+        raise ValueError("""
+        Gradient calculations are not yet available for the
+        RationalQuadratic covariance function.
+        """)
+
+    def get_bounds(self):
+        return self.bounds
+
+
+
 
 
 
@@ -38,31 +171,41 @@ class GpRegressor(object):
         error values represent normal distribution standard deviations. If this
         argument is not specified the errors are taken to be small but non-zero.
 
-    :param scale_lengths: \
-        The default behaviour of GpRegressor is to determine an appropriate
-        scale-length for each dimension separately, such that for a problem
-        with N dimensions, there are N+1 total hyperparameters. Alternatively,
-        this can be reduced to only 2 hyperparameters regardless of the number
-        of dimensions by specifying the scale_lengths argument. In this case,
-        the hyperparameters become and amplitude and a scalar multiplier for
-        the provided scale-lengths. The specified lengths must be given as an
-        iterable of length equal to the number of dimensions.
-
     :param hyperpars: \
-        The amplitude and scale-length parameters for the normal prior distribution.
-        If a single global scale length should be used, the hyperparameters should be
-        specified as a two element list, i.e. [amplitude, length]. Alternatively, a
-        separate length-scale for each dimension can be specified by passing an
-        amplitude followed by an iterable of lengths, i.e. [amplitude, (L1, L2, ...)].
+        An array specifying the hyper-parameter values to be used by the
+        covariance function class, which by default is ``SquaredExponential``.
+        See the documentation for the relevant covariance function class for
+        a description of the required hyper-parameters. Generally this argument
+        should be left unspecified, in which case the hyper-parameters will be
+        selected automatically.
+
+    :param class kernel: \
+        The covariance function class which will be used to model the data. The
+        covariance function classes can be imported from the gp_tools module and
+        then passed to ``GpRegressor`` using this keyword argument.
+
+    :param bool cross_val: \
+        If set to `True`, leave-one-out cross-validation is used to select the
+        hyper-parameters in place of the marginal likelihood.
     """
-    def __init__(self, x, y, y_err = None, scale_lengths = None, hyperpars = None):
+    def __init__(self, x, y, y_err = None, hyperpars = None, kernel = SquaredExponential, cross_val = False):
+
+        self.N_points = len(x)
+        # identify the number of spatial dimensions
+        if hasattr(x[0], '__len__'):  # multi-dimensional case
+            self.N_dimensions = len(x[0])
+        else:  # 1D case
+            self.N_dimensions = 1
+
+        # load the spatial data into a 2D array
+        self.x = zeros([self.N_points,self.N_dimensions])
+        for i,v in enumerate(x): self.x[i,:] = v
 
         # data to fit
-        self.x = x
         self.y = array(y)
 
         # data errors covariance matrix
-        self.sig = zeros([len(self.y), len(self.y)])
+        self.sig = zeros([self.N_points, self.N_points])
         if y_err is not None:
             if len(y) == len(y_err):
                 for i in range(len(self.y)):
@@ -74,46 +217,20 @@ class GpRegressor(object):
             for i in range(len(self.y)):
                 self.sig[i,i] = err
 
-        # identify the number of spatial dimensions
-        if hasattr(self.x[0], '__len__'):  # multi-dimensional case
-            self.N = len(self.x[0])
-        else:  # 1D case
-            self.N = 1
-            self.x = [ (k,) for k in self.x ]
+        # create an instance of the covariance function class
+        self.cov = kernel(self.x, self.y)
 
-        # checks or builds scale_lengths
-        if scale_lengths is None:
-            self.scale_lengths = ones(self.N)
-        elif len(scale_lengths)==self.N:
-            self.scale_lengths = array(scale_lengths)
+        if cross_val:
+            self.model_selector = self.loo_likelihood
         else:
-            raise ValueError('exactly one scale length per dimension is required')
-
-        # pre-calculates hyperparameter-independent part of the
-        # data covariance matrix as an optimisation
-        self.distances = []
-        for i in range(self.N):
-            z = array([a[i] for a in self.x])
-            self.distances.append( -0.5*subtract.outer(z,z)**2 )
+            self.model_selector = self.marginal_likelihood
 
         # if hyper-parameters are specified manually, allocate them
-        if hyperpars is not None:
-            self.a, self.s = hyperpars
-            if hasattr(self.s, '__len__'):
-                self.s = array(self.s)
-        # else if scale lengths are not specified, the scale-length
-        # in each dimension becomes a free parameter
-        elif scale_lengths is None:
-            self.optimize_hyperparameters_free_lengths()
-        # if scale-lengths are specified, then the scale-length in each dimension
-        # is scaled by a single global scale length modifier parameter
-        else:
-            self.optimize_hyperparameters_fixed_lengths()
+        if hyperpars is None:
+            hyperpars = self.optimize_hyperparameters()
 
         # build the covariance matrix
-        self.K_xx = self.build_covariance(self.a, self.s*self.scale_lengths)
-        self.L = cholesky(self.K_xx)
-        self.H = solve_triangular(self.L.T, solve_triangular(self.L, self.y, lower = True))
+        self.set_hyperparameters(hyperpars)
 
     def __call__(self, points, theta = None):
         """
@@ -132,29 +249,46 @@ class GpRegressor(object):
         if theta is not None:
             self.set_hyperparameters(theta)
 
-        lengths = self.s * self.scale_lengths
-
         mu_q = []
         errs = []
-        for v in points:
-            if hasattr(v, '__iter__'):
-                K_qx = array([self.covariance(v, j, lengths) for j in self.x]).reshape([1, len(self.x)])
-            else:
-                K_qx = array([self.covariance((v,), j, lengths) for j in self.x]).reshape([1, len(self.x)])
-
-            mu_q.append( dot( K_qx, self.H )[0] )
+        p = self.process_points(points)
+        for v in p:
+            K_qx = self.cov(v.reshape([1,self.N_dimensions]), self.x, self.hyperpars)
+            K_qq = self.cov(v.reshape([1,self.N_dimensions]), v.reshape([1,self.N_dimensions]), self.hyperpars)
+            mu_q.append(dot(K_qx, self.alpha)[0])
             v = solve_triangular(self.L, K_qx.T, lower = True)
-            errs.append( self.a**2 - npsum(v**2) )
+            errs.append( K_qq[0,0] - npsum(v**2) )
 
         return array(mu_q), sqrt( abs(array(errs)) )
 
     def set_hyperparameters(self, theta):
-        t = [exp(h) for h in theta]
-        self.a = t[0]
-        self.s = array(t[1:])
-        self.K_xx = self.build_covariance(self.a, self.s * self.scale_lengths)
+        self.hyperpars = theta
+        self.K_xx = self.cov.build_covariance(theta) + self.sig
         self.L = cholesky(self.K_xx)
-        self.H = solve_triangular(self.L.T, solve_triangular(self.L, self.y, lower=True))
+        self.alpha = solve_triangular(self.L.T, solve_triangular(self.L, self.y, lower = True))
+
+    def process_points(self, points):
+        if type(points) is ndarray:
+            x = points
+        else:
+            x = array(points)
+
+        m = len(x.shape)
+        if self.N_dimensions == 1:
+            if m == 0: # the case when given a float
+                x = x.reshape([1,1])
+            elif m == 1:
+                x = x.reshape([x.shape[0],1])
+            elif m == 2 and x.shape[1] != 1:
+                raise ValueError('given spatial points have an incorrect number of dimensions')
+        else:
+            if m == 0:
+                raise ValueError('given spatial points have an incorrect number of dimensions')
+            elif m == 1 and x.shape[1] == self.N_dimensions:
+                x = x.reshape([1, self.N_dimensions])
+            elif m == 2 and x.shape[1] != self.N_dimensions:
+                raise ValueError('given spatial points have an incorrect number of dimensions')
+        return x
 
     def gradient(self, points):
         """
@@ -171,28 +305,20 @@ class GpRegressor(object):
             A list of mean vectors and a list of covariance matrices for the gradient distribution
             at each given spatial point.
         """
-        lengths = self.s*self.scale_lengths
         mu_q = []
         vars = []
-        for v in points:
-            # build the covariance between the current point and all training points
-            if hasattr(v, '__iter__'): # multi-dimensional case
-                K_qx = array([self.covariance(v, j, lengths) for j in self.x]).reshape([1, len(self.x)])
-            else: # 1-dimensional case
-                K_qx = array([self.covariance((v,), j, lengths) for j in self.x]).reshape([1, len(self.x)])
+        p = self.process_points(points)
+        for v in p:
+            K_qx = self.cov(v.reshape([1,self.N_dimensions]), self.x, self.hyperpars)
+            A, R = self.cov.gradient_terms(v, self.x, self.hyperpars)
 
-            v = array(v)
-            # calculate required terms
-            dX = array([v - array(a) for a in self.x])
-            iL = diag(1./array(lengths)**2)
-
-            A = -dot(iL, dX.T)
-            B = (K_qx*self.H).T
+            B = (K_qx * self.alpha).T
             Q = solve_triangular(self.L, (A*K_qx).T, lower = True)
 
             # calculate the mean and covariance
             mean = dot(A,B)
-            covariance = (self.a**2)*iL - Q.T.dot(Q)
+            covariance = R - Q.T.dot(Q)
+
             # if there's only one spatial dimension, convert mean/covariance to floats
             if covariance.shape == (1,1): covariance = covariance[0,0]
             if mean.shape == (1,1): mean = mean[0,0]
@@ -213,73 +339,57 @@ class GpRegressor(object):
 
         :return: The mean vector as a 1D array, followed by covariance matrix as a 2D array.
         """
-        v = points
-        if hasattr(points, '__iter__'):
-            if hasattr(points[0], '__iter__'):
-                if len(points[0]) is not self.N:
-                    raise ValueError('Specified coordinates have incorrect dimensionality')
-            elif self.N is 1:
-                v = [(k,) for k in points]
-            else:
-                raise ValueError('The number of specified points must be greater than 1')
-        else:
-            raise ValueError('The number of specified points must be greater than 1')
+        v = self.process_points(points)
+        K_qx = self.cov(v, self.x, self.hyperpars)
+        K_qq = self.cov(v, v, self.hyperpars)
+        mu = dot(K_qx, self.alpha)
+        sigma = K_qq - dot( K_qx, solve( self.K_xx, K_qx.T ) )
+        return mu, sigma
 
+    def loo_predictions(self):
+        """
+        Calculates the 'leave-one out' (LOO) predictions for the data,
+        where each data point is removed from the training set and then
+        has its value predicted using the remaining data.
 
-        lengths = self.s * self.scale_lengths
-        K_qx = self.matrix(v, self.x, lengths)
-        K_qq = self.matrix(v, v, lengths)
-        self.mu = dot(K_qx, self.H)
-        self.sigma = K_qq - dot( K_qx, solve( self.K_xx, K_qx.T ) )
-        return self.mu, self.sigma
+        This implementation is based on equation (5.12) from Rasmussen &
+        Williams.
+        """
+        # Use the Cholesky decomposition of the covariance to find its inverse
+        I = eye(len(self.x))
+        iK = solve_triangular(self.L.T, solve_triangular(self.L, I, lower = True))
+        var = 1./diag(iK)
 
-    def dist(self, a, b, l):
-        """
-        Calculates the effective squared-distance between any two
-        points in the space by normalising the change in each
-        dimension to the corresponding value in self.scale_lengths
-        """
-        # works for non-arrays
-        return sum( ((i-j)/k)**2 for i,j,k in zip(a, b, l) )
+        mu = self.y - self.alpha * var
+        sigma = sqrt(var)
+        return mu, sigma
 
-    def covariance(self, x1, x2, lengths):
+    def loo_likelihood(self, theta):
         """
-        Evaluates the covariance function K(x1, x2) which is
-        used to construct the covariance matrix for the data.
+        Calculates the 'leave-one out' (LOO) log-likelihood.
 
-        In this case K(x1, x2) is taken to be Gaussian, and may
-        be tuned to the data provided using the hyperparameters
-        self.s and self.a
+        This implementation is based on equations (5.10, 5.11, 5.12) from
+        Rasmussen & Williams.
         """
-        z = self.dist(x1, x2, lengths)
-        return (self.a**2) * exp(-0.5*z)
+        try:
+            K_xx = self.cov.build_covariance(theta) + self.sig
+            L = cholesky(K_xx)
 
-    def matrix(self, v1, v2, lengths):
-        """
-        Given two vectors of points on the x axis v1 & v2,
-        this function returns the covariance matrix for those
-        vectors as a numpy array of size [len(v1), len(v2)]
-        """
-        M = [[self.covariance(i, j, lengths) for j in v2] for i in v1]
-        return array(M)
-
-    def build_covariance(self, a, lengths):
-        """
-        Optimized version of self.matrix() specifically for the data
-        covariance matrix where the vectors v1 & v2 are both self.x.
-        """
-        D = sum( d/l**2 for d,l in zip(self.distances, lengths) )
-        return (a**2) * exp(D) + self.sig
+            # Use the Cholesky decomposition of the covariance to find its inverse
+            I = eye(len(self.x))
+            iK = solve_triangular(L.T, solve_triangular(L, I, lower = True))
+            alpha = solve_triangular(L.T, solve_triangular(L, self.y, lower = True))
+            var = 1. / diag(iK)
+            return -0.5*(var*alpha**2 + log(var)).sum()
+        except:
+            return -1e50
 
     def marginal_likelihood(self, theta):
         """
         returns the negative log marginal likelihood for the
         supplied hyperparameter values.
         """
-        t = [exp(h) for h in theta]
-        a = t[0]
-        s = array(t[1:])
-        K_xx = self.build_covariance(a, s*self.scale_lengths)
+        K_xx = self.cov.build_covariance(theta) + self.sig
 
         try: # protection against singular matrix error crash
             L = cholesky(K_xx)
@@ -288,38 +398,11 @@ class GpRegressor(object):
         except:
             return -1e50
 
-    def optimize_hyperparameters_fixed_lengths(self):
-        a_std = log(std(self.y)) # rough guess for amplitude value
-
-        D = -2*sum(d / l**2 for d, l in zip(self.distances, self.scale_lengths))
-        # generate optimisation bounds
-        D_lwr = log( sqrt( D[nonzero(D)].min() ) ) - 1
-        D_upr = log( sqrt( D.max() ) ) + 1
-        bnds = [(a_std-4, a_std+4), (D_lwr, D_upr)]
-
+    def optimize_hyperparameters(self):
+        bnds = self.cov.get_bounds()
         # optimise the hyperparameters
-        opt_result = differential_evolution(lambda x : -self.marginal_likelihood(x), bnds)
-
-        # parameters are selected in log-space, so taking exp() here yields desired values.
-        self.a, self.s = [exp(h) for h in opt_result.x]
-
-    def optimize_hyperparameters_free_lengths(self):
-        a_std = log(std(self.y)) # rough guess for amplitude value
-        bnds = [(a_std - 4, a_std + 4)]
-
-        for d in self.distances:
-            L = sqrt(-2*d)
-            lwr = log(L[nonzero(L)].min()) - 1
-            upr = log(L.max()) + 1
-            bnds.append( (lwr, upr) )
-
-        # optimise the hyperparameters
-        opt_result = differential_evolution(lambda x : -self.marginal_likelihood(x), bnds)
-
-        # parameters are selected in log-space, so taking exp() here yields desired values.
-        t = [exp(h) for h in opt_result.x]
-        self.a = t[0]
-        self.s = array(t[1:])
+        opt_result = differential_evolution(lambda x : -self.model_selector(x), bnds)
+        return opt_result.x
 
 
 
@@ -548,10 +631,23 @@ class GpOptimiser(object):
         for the optimisation in each dimension in the format (lower_bound, upper_bound).
 
     :param hyperpars: \
-        Hyper-parameters used by the GP-regression estimate. See the documentation of
-        the *hyperpars* keyword of the GpRegressor class for more details.
+        An array specifying the hyper-parameter values to be used by the
+        covariance function class, which by default is ``SquaredExponential``.
+        See the documentation for the relevant covariance function class for
+        a description of the required hyper-parameters. Generally this argument
+        should be left unspecified, in which case the hyper-parameters will be
+        selected automatically.
+
+    :param class kernel: \
+        The covariance function class which will be used to model the data. The
+        covariance function classes can be imported from the gp_tools module and
+        then passed to ``GpOptimiser`` using this keyword argument.
+
+    :param bool cross_val: \
+        If set to `True`, leave-one-out cross-validation is used to select the
+        hyper-parameters in place of the marginal likelihood.
     """
-    def __init__(self, x, y, y_err = None, bounds = None, hyperpars = None):
+    def __init__(self, x, y, y_err = None, bounds = None, hyperpars = None, kernel = SquaredExponential, cross_val = False):
         self.x = list(x)
         self.y = list(y)
         self.y_err = y_err
@@ -562,7 +658,9 @@ class GpOptimiser(object):
         else:
             self.bounds = bounds
 
-        self.gp = GpRegressor(x, y, y_err=y_err, hyperpars=hyperpars)
+        self.kernel = kernel
+        self.cross_val = cross_val
+        self.gp = GpRegressor(x, y, y_err=y_err, hyperpars=hyperpars, kernel = kernel, cross_val = cross_val)
 
         self.ir2pi = 1 / sqrt(2*pi)
         self.ir2 = 1. / sqrt(2.)
@@ -591,12 +689,16 @@ class GpOptimiser(object):
                 raise ValueError('y_err must be specified for new evaluations if y_err was specified during __init__')
 
         # re-train the GP
-        self.gp = GpRegressor(self.x, self.y, y_err=self.y_err)
+        self.gp = GpRegressor(self.x, self.y, y_err=self.y_err, kernel = self.kernel, cross_val = self.cross_val)
         self.mu_max = max(self.y)
 
     def variance_aq(self,x):
-        _, sig = self.gp(x)
-        return -sig**2
+        _, sig = self.gp([x])
+        return -sig[0]**2
+
+    def max_prediction(self,x):
+        mu, _ = self.gp([x])
+        return -mu[0]
 
     def maximise_acquisition(self, aq_func):
         opt_result = differential_evolution(aq_func, self.bounds, popsize = 30)
