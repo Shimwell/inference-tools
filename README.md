@@ -1,4 +1,4 @@
-# The inference-tools package 
+# inference-tools
 
 [![Documentation Status](https://readthedocs.org/projects/inference-tools/badge/?version=stable)](https://inference-tools.readthedocs.io/en/stable/?badge=stable)
 [![GitHub license](https://img.shields.io/github/license/C-bowman/inference-tools?color=blue)](https://github.com/C-bowman/inference-tools/blob/master/LICENSE)
@@ -8,12 +8,23 @@
 This package aims to provide a set of python-based tools for Bayesian data analysis
 which are simple to use, allowing them to applied quickly and easily.
 
-Please see the [inference-tools documentation](https://inference-tools.readthedocs.io/en/latest/) if you are
-interested in using or learning more about the package.
+## Features
 
-inference-tools is available from the python package index [PyPI](https://pypi.org/project/inference-tools/), so
-can also be installed using [pip](https://pip.pypa.io/en/stable/).
+ - Implementations of MCMC algorithms like Gibbs sampling and Hamiltonian Monte-Carlo for 
+ sampling from user-defined posterior distributions.
+ 
+ - Density estimation and plotting tools for analysing and visualising inference results.
+ 
+ - Gaussian-process regression and optimisation.
 
-Requests for features/improvements can be made via the issue tracker. If you have questions
-or are interested in getting involved with the development of this package, please contact
-me at `chris.bowman.physics@gmail.com`.
+## Installation
+
+inference-tools is available from [PyPI](https://pypi.org/project/inference-tools/), 
+so can be easily installed using [pip](https://pip.pypa.io/en/stable/) as follows:
+```bash
+pip install inference-tools
+```
+
+## Documentation
+
+Full documentation is available at [inference-tools.readthedocs.io](https://inference-tools.readthedocs.io/en/stable/).

@@ -11,7 +11,6 @@ from scipy.optimize import minimize, minimize_scalar, differential_evolution
 from warnings import warn
 from itertools import product
 from functools import reduce
-from copy import copy
 import matplotlib.pyplot as plt
 
 
@@ -394,10 +393,10 @@ class GaussianKDE(DensityEstimator):
         # get the cutoff indices
         lwr_inds = searchsorted(self.s, mids - self.cutoff)
         upr_inds = searchsorted(self.s, mids + self.cutoff)
-        cuts = list(zip(lwr_inds, upr_inds))
+        slices = [slice(l,u) for l,u in zip(lwr_inds, upr_inds)]
 
-        # now build a dict that maps midpoints to cut indices
-        self.cut_map = dict(zip(mids, cuts))
+        # now build a dict that maps midpoints to the slices
+        self.slice_map = dict(zip(mids, slices))
 
         # build a binary tree which allows fast look-up of which
         # region contains a given value
@@ -422,9 +421,9 @@ class GaussianKDE(DensityEstimator):
         # look-up the region
         region = self.tree.lookup(x)
         # look-up the cutting points
-        cuts = self.cut_map[region[2]]
+        slc = self.slice_map[region[2]]
         # evaluate the density estimate from the slice
-        return self.norm * exp(-((x - self.s[cuts[0]:cuts[1]])*self.q)**2).sum()
+        return self.norm * exp(-((x - self.s[slc])*self.q)**2).sum()
 
     def simple_bandwidth_estimator(self):
         # A simple estimate which assumes the distribution close to a Gaussian
@@ -500,7 +499,7 @@ class GaussianKDE(DensityEstimator):
         d = log(c) - log(width * len(samples) * sqrt(2*pi)) - log_pdf
         loo_adjustment = log(1 - exp(d))
         log_probs = log_pdf + loo_adjustment
-        return sum(log_probs) # sum to find the overall log-probability
+        return log_probs.sum() # sum to find the overall log-probability
 
     @staticmethod
     def log_kernel(x, c, h):
@@ -513,7 +512,7 @@ class GaussianKDE(DensityEstimator):
         return reduce(logaddexp, generator) - log(len(samples) * sqrt(2*pi))
 
     def locate_mode(self):
-        lwr, upr = sample_hdi(self.s, 0.1, force_single=True) # use the 10% HDI to get close to the mode
+        lwr, upr = sample_hdi(self.s, 0.1) # use the 10% HDI to get close to the mode
         result = minimize_scalar(lambda x : -self.__call__(x), bounds = [lwr, upr], method = 'bounded')
         return result.x
 
@@ -543,7 +542,7 @@ class GaussianKDE(DensityEstimator):
         :param float frac: Fraction of total probability contained by the desired interval(s).
         :return: A list of tuples which specify the intervals.
         """
-        return sample_hdi(self.s, frac)
+        return sample_hdi(self.s, frac, allow_double=True)
 
 
 
@@ -589,43 +588,24 @@ class BinaryTree:
     def __init__(self, layers, limits):
         self.n = layers
         self.lims = limits
-        self.midpoint = 0.5*(limits[0] + limits[1])
+        self.edges = linspace(limits[0], limits[1], 2**self.n + 1)
 
-        # first generate n trees of depth 1
-        L = linspace(limits[0], limits[1], 2**self.n + 1)
-        self.mids = 0.5*(L[1:] + L[:-1])
-        L = [ [L[i], L[i+1], 0.5*(L[i]+L[i+1])] for i in range(2**self.n) ]
-
-        # now recursively merge them until we have 1 tree of depth n
-        for k in range(self.n-1):
-            q = []
-            for i in range(len(L)//2):
-                q.append( [L[2*i], L[2*i+1], 0.5*(L[2*i][2] + L[2*i+1][2])] )
-            L = copy(q)
-
-        L.append(self.midpoint)
-        self.tree = L
+        self.p = [[a,b,0.5*(a+b)] for a,b in zip(self.edges[:-1], self.edges[1:])]
+        self.p.insert(0,self.p[0])
+        self.p.append(self.p[-1])
 
     def lookup(self, val):
-        D = self.tree
-        for i in range(self.n):
-            D = D[val > D[2]]
-        return D
+        return self.p[searchsorted(self.edges, val)]
 
 
 
 
-def sample_hdi(sample, fraction, force_single = False):
+def sample_hdi(sample, fraction, allow_double = False):
     """
     Estimate the highest-density interval(s) for a given sample.
 
-    This function computes the shortest possible single interval and double
-    interval which contain a chosen fraction of the elements in the given
-    sample.
-
-    The double-interval solution is returned in place of the single-interval
-    solution only if it's total length is at least 1% less than that of the
-    single-interval.
+    This function computes the shortest possible interval which contains a chosen
+    fraction of the elements in the given sample.
 
     :param sample: \
         A sample for which the interval will be determined
@@ -633,9 +613,9 @@ def sample_hdi(sample, fraction, force_single = False):
     :param float fraction: \
         The fraction of the total probability to be contained by the interval.
 
-    :param bool force_single: \
-        When set to True, only the shortest single interval is computed and
-        returned, ignoring the possibility of a shorter double interval.
+    :param bool allow_double: \
+        When set to True, a double-interval is returned instead if one exists whose total length
+        is meaningfully shorter than the optimal single interval.
 
     :return: tuple(s) specifying the lower and upper bounds of the highest-density interval(s)
     """
@@ -662,7 +642,7 @@ def sample_hdi(sample, fraction, force_single = False):
     i = widths.argmin()
     r1, w1 = (s[i], s[i+L]), s[i+L]-s[i]
 
-    if not force_single:
+    if allow_double:
         # now get the best 2-interval solution
         minfunc = dbl_interval_length(sample, fraction)
         bounds = minfunc.get_bounds()
@@ -671,7 +651,7 @@ def sample_hdi(sample, fraction, force_single = False):
         w2 = (I2[1]-I2[0]) + (I1[1]-I1[0])
 
     # return the split interval if the width reduction is non-trivial:
-    if not force_single and w2 < w1*0.99:
+    if allow_double and w2 < w1*0.99:
         return I1, I2
     else:
         return r1

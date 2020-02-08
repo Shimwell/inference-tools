@@ -123,7 +123,8 @@ chain.advance(50000)
 chain.plot_diagnostics()
 
 # We can automatically set sensible burn and thin values for the sample
-chain.autoselect_burn_and_thin()
+chain.autoselect_burn()
+chain.autoselect_thin()
 
 # we can get a quick overview of the posterior using the matrix_plot
 # functionality of chain objects, which plots all possible 1D & 2D
@@ -177,25 +178,17 @@ x_fits = linspace(400, 450, M)
 # get the sample
 sample = chain.get_sample()
 # pass each through the forward model
-curves = array([ posterior.forward_model(x_fits, theta) for theta in sample])
+curves = array([posterior.forward_model(x_fits, theta) for theta in sample])
 
-# we can use the sample_hdi function from the pdf_tools module to produce highest-density
-# intervals for each point where the model is evaluated:
-from inference.pdf_tools import sample_hdi
-hdi_1sigma = array([sample_hdi(c, 0.68, force_single = True) for c in curves.T])
-hdi_2sigma = array([sample_hdi(c, 0.95, force_single = True) for c in curves.T])
-
-# construct the plot
 plt.figure(figsize = (8,5))
-# plot the 1 and 2-sigma highest-density intervals
-plt.fill_between(x_fits, hdi_2sigma[:,0], hdi_2sigma[:,1], color = 'red', alpha = 0.10, label = '2-sigma HDI')
-plt.fill_between(x_fits, hdi_1sigma[:,0], hdi_1sigma[:,1], color = 'red', alpha = 0.20, label = '1-sigma HDI')
-# plot the MAP estimate
-MAP = posterior.forward_model(x_fits, chain.mode())
-plt.plot(x_fits, MAP, c = 'red', lw = 2, ls = 'dashed', label = 'MAP estimate')
-# plot the data
-plt.plot( x_data, y_data, 'D', c = 'blue', markeredgecolor = 'black', markersize = 5, label = 'data')
-# configure the plot
+
+# We can use the hdi_plot function from the plotting module to plot
+# highest-density intervals for each point where the model is evaluated:
+from inference.plotting import hdi_plot
+hdi_plot(x_fits, curves)
+
+# build the rest of the plot
+plt.plot( x_data, y_data, 'D', c = 'red', label = 'data')
 plt.xlabel('wavelength (nm)')
 plt.ylabel('intensity')
 plt.xlim([410, 440])

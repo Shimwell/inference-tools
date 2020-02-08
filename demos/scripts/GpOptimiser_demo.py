@@ -31,9 +31,10 @@ def example_plot_1d():
     ax2.set_ylabel('y')
     ax2.set_xticks([])
 
-    aq = array([abs(GP.expected_improvement(array([k]))) for k in x_gp])
+    aq = array([abs(GP.acquisition(array([k]))) for k in x_gp]).squeeze()
     proposal = x_gp[aq.argmax()]
-    ax3.plot(x_gp, 0.9*aq/aq.max(), c = 'green', label = 'acquisition function')
+    ax3.fill_between(x_gp, 0.9*aq/aq.max(), color = 'green', alpha = 0.15)
+    ax3.plot(x_gp, 0.9*aq/aq.max(), color = 'green', label = 'acquisition function')
     ax3.plot([proposal]*2, [0.,1.], c = 'green', ls = 'dashed', label = 'acquisition maximum')
     ax2.plot([proposal]*2, [-1.5,search_function(proposal)], c = 'green', ls = 'dashed')
     ax2.plot(proposal, search_function(proposal), 'o', c = 'green', label = 'proposed observation')
@@ -106,7 +107,7 @@ for i in range(11):
     example_plot_1d()
 
     # request the proposed evaluation
-    new_x = GP.search_for_maximum()
+    new_x = GP.propose_evaluation()
 
     # evaluate the new point
     new_y = search_function(new_x)
@@ -163,7 +164,7 @@ max_values = [max(GP.y)]
 evaluations = [len(GP.y)]
 
 for i in range(25):
-    new_x = GP.search_for_maximum()
+    new_x = GP.propose_evaluation()
     new_y = search_function(new_x)
     GP.add_evaluation(new_x, new_y)
 

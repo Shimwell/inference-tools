@@ -2,7 +2,6 @@
 """
 .. moduleauthor:: Chris Bowman <chris.bowman.physics@gmail.com>
 """
-
 from numpy import array, meshgrid, linspace, sqrt, ceil
 from itertools import product, cycle
 from warnings import warn
@@ -12,7 +11,7 @@ from inference.pdf_tools import GaussianKDE, KDE2D, sample_hdi
 
 
 def matrix_plot(samples, labels = None, show = True, reference = None, filename = None, plot_style = 'contour',
-                colormap = 'Blues', show_ticks = None, point_colors = None, point_size = 1):
+                colormap = 'Blues', show_ticks = None, point_colors = None, point_size = 1, label_size = 10):
     """
     Construct a 'matrix plot' for a set of variables which shows all possible
     1D and 2D marginal distributions.
@@ -49,6 +48,9 @@ def matrix_plot(samples, labels = None, show = True, reference = None, filename 
     :keyword point_size: \
         An array containing data which will be used to set the size of the points
         if the plot_style argument is set to 'scatter'.
+
+    :keyword int label_size: \
+        The font-size used for axis labels.
     """
 
     N_par = len(samples)
@@ -83,7 +85,7 @@ def matrix_plot(samples, labels = None, show = True, reference = None, filename 
     axis_arrays = []
     for sample in samples:
         # get the 98% HDI to calculate plot limits
-        lwr, upr = sample_hdi(sample, fraction = 0.98, force_single = True)
+        lwr, upr = sample_hdi(sample, fraction = 0.98)
         # store the limits and axis array
         axis_limits.append([lwr-(upr-lwr)*0.3, upr+(upr-lwr)*0.3])
         axis_arrays.append(linspace(lwr-(upr-lwr)*0.35, upr+(upr-lwr)*0.35, L))
@@ -156,8 +158,8 @@ def matrix_plot(samples, labels = None, show = True, reference = None, filename 
                         markerfacecolor = 'none', markeredgecolor = 'red', markeredgewidth = 2)
 
         # assign axis labels
-        if i == N_par - 1: ax.set_xlabel(labels[j])
-        if j == 0 and i != 0: ax.set_ylabel(labels[i])
+        if i == N_par - 1: ax.set_xlabel(labels[j], fontsize = label_size)
+        if j == 0 and i != 0: ax.set_ylabel(labels[i], fontsize = label_size)
         # impose x-limits on bottom row
         if i == N_par - 1: ax.set_xlim(axis_limits[j])
         # impose y-limits on left column, except the top-left corner
@@ -235,8 +237,8 @@ def trace_plot(samples, labels = None, show = True, filename = None):
         axes[(i,j)].plot(s, '.', markersize = 4, alpha = 0.15, c = col)
         axes[(i,j)].set_ylabel(label)
         # get the 98% HDI to calculate plot limits, and 10% HDI to estimate the mode
-        lwr, upr = sample_hdi(s, fraction = 0.99, force_single = True)
-        mid = 0.5 * sum(sample_hdi(s, fraction=0.10, force_single=True))
+        lwr, upr = sample_hdi(s, fraction = 0.99)
+        mid = 0.5 * sum(sample_hdi(s, fraction=0.10))
         axes[(i,j)].set_ylim([lwr-(mid-lwr)*0.7, upr+(upr-mid)*0.7])
         # get the 10% HDI to estimate the mode
         axes[(i,j)].set_yticks([lwr-(mid-lwr)*0.5, mid, upr+(upr-mid)*0.5])
@@ -251,3 +253,86 @@ def trace_plot(samples, labels = None, show = True, filename = None):
     else:
         fig.clear()
         plt.close(fig)
+
+
+
+
+def hdi_plot(x, sample, intervals=(0.35, 0.65, 0.95), colormap='Blues', axis=None, label_intervals=True):
+    """
+    Plot highest-density intervals for a given sample of model realisations.
+
+    :param x: \
+        The x-axis locations of the sample data.
+
+    :param samples: \
+        A ``numpy.ndarray`` containing the sample data, which has shape ``(n, len(x))`` where
+        ``n`` is the number of samples.
+
+    :keyword intervals: \
+        A tuple containing the fractions of the total probability for each interval.
+
+    :keyword colormap: \
+        The colormap to be used for plotting the intervals. Must be a vaild argument
+        of the ``matplotlib.cm.get_cmap`` function.
+
+    :keyword axis: \
+        A ``matplotlib.pyplot`` axis object which will be used to plot the intervals.
+
+    :keyword bool label_intervals: \
+        If ``True``, then labels will be assigned to each interval plot such that they appear
+        in the legend when using ``matplotlib.pyplot.legend``.
+    """
+    # order the intervals from highest to lowest
+    intervals = array(intervals)
+    intervals.sort()
+    intervals = intervals[::-1]
+
+    # check that all the intervals are valid:
+    if not all( (intervals > 0.) & (intervals < 1.) ):
+        raise ValueError('All intervals must be greater than 0 and less than 1')
+
+    # check the sample data has compatible dimensions
+    s = array(sample)
+    if s.shape[1] != len(x):
+        if s.shape[0] == len(x):
+            s = s.T
+        else:
+            raise ValueError('"x" and "sample" have incompatible dimensions')
+
+    # sort the sample data
+    s.sort(axis=0)
+    n = s.shape[0]
+
+    # construct the colors for each interval
+    cmap = get_cmap(colormap)
+    lwr = 0.2
+    upr = 0.8
+    colors = 1 - intervals
+    colors += lwr - colors.min()
+    colors *= upr/colors.max()
+    colors = [cmap(int(255*c)) for c in colors]
+
+    # if not plotting axis is given, then use default pyplot
+    if axis is None: axis = plt
+
+    from numpy import take_along_axis, expand_dims
+
+    # iterate over the intervals and plot each
+    for frac, col in zip(intervals, colors):
+        L = int(frac * n)
+
+        # check that we have enough samples to estimate the HDI for the chosen fraction
+        if n > L:
+            # find the optimal single HDI
+            widths = s[L:,:] - s[:n-L,:]
+            i = expand_dims(widths.argmin(axis=0), axis=0)
+            lwr = take_along_axis(s,i,0).squeeze()
+            upr = take_along_axis(s,i+L,0).squeeze()
+        else:
+            lwr = s[0,:]
+            upr = s[-1,:]
+
+        if label_intervals:
+            axis.fill_between(x, lwr, upr, color=col, label = '{}% HDI'.format(int(100*frac)))
+        else:
+            axis.fill_between(x, lwr, upr, color=col)

@@ -230,8 +230,8 @@ class MarkovChain(object):
     Implementation of the metropolis-hastings algorithm using a multivariate-normal proposal distribution.
 
     :param func posterior: \
-        a function which returns the log-posterior probability density for a given set of model parameters
-        theta, which should be the only argument so that: ln(P) = posterior(theta)
+        a function which takes the vector of model parameters as a ``numpy.ndarray``,
+        and returns the posterior log-probability.
 
     :param start: \
         vector of model parameters which correspond to the parameter-space coordinates at which the chain
@@ -286,7 +286,7 @@ class MarkovChain(object):
         found which satisfies the metropolis-hastings criteria.
         """
         while True:
-            proposal = [p.proposal() for p in self.params]
+            proposal = array([p.proposal() for p in self.params])
             pval = self.posterior(proposal) * self.inv_temp
 
             if pval > self.probs[-1]:
@@ -330,7 +330,11 @@ class MarkovChain(object):
 
         if self.print_status:
             # this is a little ugly...
-            sys.stdout.write('\r  advancing chain:   [ complete ]                         ')
+            t_elapsed = time() - t_start
+            mins, secs = divmod(t_elapsed, 60)
+            hrs, mins = divmod(mins, 60)
+            time_taken = "%d:%02d:%02d" % (hrs, mins, secs)
+            sys.stdout.write('\r  advancing chain:   [ complete - {} steps taken in {} ]      '.format(m,time_taken))
             sys.stdout.flush()
             sys.stdout.write('\n')
 
@@ -375,7 +379,10 @@ class MarkovChain(object):
             sys.stdout.flush()
 
         # this is a little ugly...
-        sys.stdout.write('\r  advancing chain:   [ complete ]                         ')
+        mins, secs = divmod(run_time, 60)
+        hrs, mins = divmod(mins, 60)
+        time_taken = "%d:%02d:%02d" % (hrs, mins, secs)
+        sys.stdout.write('\r  advancing chain:   [ complete - {} steps taken in {} ]      '.format(self.n - start_length, time_taken))
         sys.stdout.flush()
         sys.stdout.write('\n')
 
@@ -784,9 +791,13 @@ class MarkovChain(object):
         width_estimate = mean(width_estimates)
         return int(max(prob_estimate, width_estimate))
 
-    def autoselect_burn_and_thin(self):
+    def autoselect_burn(self):
         self.burn = self.estimate_burn_in()
-        param_ESS = [ ESS(array(self.get_parameter(i))) for i in range(self.L) ]
+        msg = '[ burn-in set to {} | {:.1%} of total samples ]'.format(self.burn, self.burn/self.n)
+        print(msg)
+
+    def autoselect_thin(self):
+        param_ESS = [ ESS(array(self.get_parameter(i, thin = 1))) for i in range(self.L) ]
         self.thin = int( (self.n-self.burn) / min(param_ESS) )
         if self.thin < 1:
             self.thin = 1
@@ -795,14 +806,13 @@ class MarkovChain(object):
             warn('Thinning not performed as lowest ESS is below 1')
         elif (self.n-self.burn)/self.thin < 100:
             warn('Sample size after thinning is less than 100')
-
-        msg = '\n~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n'
-        msg+= '         burn-in set to ' + str(self.burn) + '\n'
-        msg+= '        thinning set to ' + str(self.thin) + '\n'
-        msg+= ' thinned sample size is ' + str(len(self.probs[self.burn::self.thin])) + '\n'
-        msg+= '~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~\n'
+        msg = '[ thinning factor set to {} | thinned sample size is {} ]'.format(self.thin, len(self.probs[self.burn::self.thin]))
         print(msg)
-            
+
+    def autoselect_burn_and_thin(self):
+        self.autoselect_burn()
+        self.autoselect_thin()
+
 
 
 
@@ -810,17 +820,17 @@ class MarkovChain(object):
 
 class GibbsChain(MarkovChain):
     """
-    A Gibbs sampling class implemented as a child of the MarkovChain class.
+    A class for sampling from distributions using Gibbs-sampling.
 
     In Gibbs sampling, each "step" in the chain consists of a series of 1D Metropolis-Hastings
-    steps, one for each parameter, such that each step all parameters have been adjusted.
+    updates, one for each parameter, such that after each step all parameters have been adjusted.
 
-    This allows 1D step acceptance rate data to be collected independently for each parameter,
-    thereby allowing the proposal width of each parameter to be tuned individually.
+    This allows Metropolis-Hastings update acceptance rate data to be collected independently for
+    each parameter, thereby allowing the proposal width of each parameter to be tuned individually.
 
     :param func posterior: \
-        a function which returns the log-posterior probability density for a given set of model
-        parameters theta, which should be the only argument so that: ln(P) = posterior(theta).
+        a function which takes the vector of model parameters as a ``numpy.ndarray``,
+        and returns the posterior log-probability.
 
     :param start: \
         vector of model parameters which correspond to the parameter-space coordinates at which
@@ -844,7 +854,7 @@ class GibbsChain(MarkovChain):
         Take a 1D metropolis-hastings step for each parameter
         """
         p_old = self.probs[-1]
-        prop = [p.samples[-1] for p in self.params]
+        prop = array([p.samples[-1] for p in self.params])
 
         for i, p in enumerate(self.params):
 
@@ -893,9 +903,8 @@ class PcaChain(MarkovChain):
     derived from the sample itself, and the eigenvectors are re-calculated.
 
     :param func posterior: \
-        a function which returns the log-posterior probability density for a
-        given set of model parameters theta, which should be the only argument
-        so that: ln(P) = posterior(theta)
+        a function which takes the vector of model parameters as a ``numpy.ndarray``,
+        and returns the posterior log-probability.
 
     :param start: \
         vector of model parameters which correspond to the parameter-space coordinates
@@ -1140,9 +1149,8 @@ class HamiltonianChain(MarkovChain):
     this functionality in the future, for example by implementing the NUTS algorithm.
 
     :param func posterior: \
-        A function which returns the log-posterior probability density for a
-        given set of model parameters theta, which should be the only argument
-        so that: ln(P) = posterior(theta)
+        a function which takes the vector of model parameters as a ``numpy.ndarray``,
+        and returns the posterior log-probability.
 
     :param func grad: \
         A function which returns the gradient of the log-posterior probability density
@@ -1290,19 +1298,19 @@ class HamiltonianChain(MarkovChain):
     def bounded_leapfrog(self, t, r, g):
         r2 = r + (0.5*self.ES.epsilon)*g
         t2 = t + self.ES.epsilon * r2 * self.variance
-
         # check for values outside bounds
-        lwr_bools = t2 < self.lwr_bounds
-        upr_bools = t2 > self.upr_bounds
-
+        lwr_diff = self.lwr_bounds-t2
+        upr_diff = t2-self.upr_bounds
+        lwr_bools = lwr_diff > 0
+        upr_bools = upr_diff > 0
         # calculate necessary adjustment
-        lwr_adjust = ( lwr_bools*(self.lwr_bounds-t2) ) % self.widths
-        upr_adjust = ( upr_bools*(t2-self.upr_bounds) ) % self.widths
-        t2 += 2*lwr_adjust
-        t2 -= 2*upr_adjust
+        lwr_adjust = lwr_bools*(lwr_diff + lwr_diff % (0.1*self.widths))
+        upr_adjust = upr_bools*(upr_diff + upr_diff % (0.1*self.widths))
+        t2 += lwr_adjust
+        t2 -= upr_adjust
 
         # reverse momenta where necessary
-        reflect = 1 - 2 * (lwr_bools | upr_bools)
+        reflect = 1 - 2*(lwr_bools | upr_bools)
         r2 *= reflect
 
         g = self.grad(t2) * self.inv_temp
@@ -1437,7 +1445,7 @@ class HamiltonianChain(MarkovChain):
         epsl = abs((array(self.ES.epsilon_values)[::-1] / self.ES.epsilon) - 1.)
         chks = array(self.ES.epsilon_checks)[::-1]
         epsl_estimate = chks[ argmax(epsl > 0.15) ] * self.ES.accept_rate
-        return int(max(prob_estimate, epsl_estimate))
+        return int(min(max(prob_estimate, epsl_estimate), 0.9*self.n))
 
     def save(self, filename, compressed = False):
         items = [
@@ -1832,7 +1840,7 @@ class ParallelTempering(object):
             sys.stdout.flush()
 
         # this is a little ugly...
-        sys.stdout.write('\r  [ Running ParallelTempering - complete! ]            ')
+        sys.stdout.write('\r  [ Running ParallelTempering - complete! ]                    ')
         sys.stdout.flush()
         sys.stdout.write('\n')
 
@@ -2003,7 +2011,7 @@ class EnsembleSampler(object):
         ax1 = fig.add_subplot(221)
         alpha = max(0.01, min(1, 20. / float(self.N_walkers)))
         for i in range(self.N_walkers):
-            ax1.plot(x, rates[i, :], lw = 0.5, c = 'C0', alpha = alpha)
+            ax1.plot(x, rates[i,:], lw = 0.5, c = 'C0', alpha = alpha)
         ax1.plot(x, avg_rate, lw = 2, c = 'red', label = 'mean rate of all walkers')
         ax1.set_ylim([0, 1])
         ax1.grid()
@@ -2048,13 +2056,13 @@ class EnsembleSampler(object):
         plt.tight_layout()
         plt.show()
 
-    def matrix_plot(self):
+    def matrix_plot(self, **kwargs):
         params = [k for k in self.theta.T]
-        matrix_plot(samples = params)
+        matrix_plot(samples = params, **kwargs)
 
-    def trace_plot(self):
+    def trace_plot(self, **kwargs):
         params = [k for k in self.theta.T]
-        trace_plot(samples = params)
+        trace_plot(samples = params, **kwargs)
 
     def save(self, filename):
         D = {
