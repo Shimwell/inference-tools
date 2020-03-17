@@ -1,0 +1,32 @@
+version: 2.1
+
+jobs:
+  build:
+    docker:
+      - image: cbowman/inference
+      
+
+    working_directory: ~/repo
+
+    steps:
+      - checkout
+      - run:
+          name: install
+          command:
+            python setup.py install
+
+      - run:
+          name: run tests
+          command: 
+            pytest tests 
+      - store_test_results:
+          path: test-reports
+
+      - store_artifacts:
+          path: test-reports
+
+      - run:
+          name: install curl
+          command:
+            apt-get install curl
+      - run: curl -s https://codecov.io/bash | bash
